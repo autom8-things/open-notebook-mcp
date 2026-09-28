@@ -157,6 +157,24 @@ CAPABILITIES: tuple[Capability, ...] = (
         example={"source_id": "source:abc123"},
         typical_bytes=100,
     ),
+    Capability(
+        name="add_source_to_notebook",
+        summary="Add an existing source to a notebook (source can belong to multiple notebooks).",
+        tags=("sources", "notebooks", "membership", "write"),
+        args={"notebook_id": "str", "source_id": "str"},
+        returns="dict[str, Any]",
+        example={"notebook_id": "notebook:abc123", "source_id": "source:xyz789"},
+        typical_bytes=200,
+    ),
+    Capability(
+        name="remove_source_from_notebook",
+        summary="Remove a source from a notebook without deleting the source.",
+        tags=("sources", "notebooks", "membership", "write"),
+        args={"notebook_id": "str", "source_id": "str"},
+        returns="dict[str, Any]",
+        example={"notebook_id": "notebook:abc123", "source_id": "source:xyz789"},
+        typical_bytes=200,
+    ),
     # Notes API
     Capability(
         name="list_notes",
@@ -673,32 +691,40 @@ async def create_source(
     notebook_id: str,
     type: str,
     url: Optional[str] = None,
+    content: Optional[str] = None,
+    file_path: Optional[str] = None,
     title: Optional[str] = None,
     embed: bool = True,
 ) -> dict[str, Any]:
     """Create a new source (link, upload, or text).
-    
+
     Args:
         notebook_id: Notebook ID to add source to
         type: Source type ('link', 'upload', or 'text')
         url: URL for link type sources
+        content: Text content for text type sources
+        file_path: File path for upload type sources
         title: Optional title
         embed: Whether to generate embeddings (default: True)
-    
+
     Returns:
         Created source details
     """
     data = {
-        "notebook_id": notebook_id,
+        "notebooks": [notebook_id],
         "type": type,
         "embed": embed,
     }
     if url is not None:
         data["url"] = url
+    if content is not None:
+        data["content"] = content
+    if file_path is not None:
+        data["file_path"] = file_path
     if title is not None:
         data["title"] = title
-    
-    source = await make_request("POST", "/api/sources", json_data=data)
+
+    source = await make_request("POST", "/api/sources/json", json_data=data)
     return {
         "request_id": generate_request_id(),
         "source": source,
@@ -735,16 +761,75 @@ async def update_source(
 @mcp.tool()
 async def delete_source(source_id: str) -> dict[str, Any]:
     """Delete a source.
-    
+
     Args:
         source_id: Source ID
-    
+
     Returns:
         Success message
     """
     result = await make_request("DELETE", f"/api/sources/{source_id}")
     return {
         "request_id": generate_request_id(),
+        "result": result,
+    }
+
+@mcp.tool()
+async def add_source_to_notebook(notebook_id: str, source_id: str) -> dict[str, Any]:
+    """Add an existing source to a notebook.
+
+    A source can belong to multiple notebooks simultaneously. Use this to assign
+    a source to an additional notebook (e.g. moving from Unsorted to Library by
+    adding it to Library before calling remove_source_from_notebook for Unsorted).
+
+    WARNING — known upstream idempotency bug (untested as of 2026-09-19):
+    The add endpoint's duplicate-check has inverted field names in the DB query,
+    so it may silently create a duplicate reference record if called twice for the
+    same (notebook_id, source_id) pair. Do NOT call this twice for the same pair
+    until the bug has been verified or fixed. Check current membership via
+    get_source before calling.
+
+    Args:
+        notebook_id: Notebook ID to add the source to
+        source_id: Source ID to add
+
+    Returns:
+        API response (typically empty on success)
+    """
+    result = await make_request(
+        "POST",
+        f"/api/notebooks/{notebook_id}/sources/{source_id}",
+    )
+    return {
+        "request_id": generate_request_id(),
+        "notebook_id": notebook_id,
+        "source_id": source_id,
+        "result": result,
+    }
+
+@mcp.tool()
+async def remove_source_from_notebook(notebook_id: str, source_id: str) -> dict[str, Any]:
+    """Remove a source from a notebook without deleting the source.
+
+    Use this as the second step of a notebook transition: first add the source to
+    the destination notebook with add_source_to_notebook, then call this to drop
+    it from the origin notebook. The source itself and its embeddings are untouched.
+
+    Args:
+        notebook_id: Notebook ID to remove the source from
+        source_id: Source ID to remove
+
+    Returns:
+        API response (typically empty on success)
+    """
+    result = await make_request(
+        "DELETE",
+        f"/api/notebooks/{notebook_id}/sources/{source_id}",
+    )
+    return {
+        "request_id": generate_request_id(),
+        "notebook_id": notebook_id,
+        "source_id": source_id,
         "result": result,
     }
 
